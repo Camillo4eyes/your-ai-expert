@@ -4,14 +4,18 @@ app.py — Streamlit entry point for "Your AI Expert"
 Users can choose an AI expert and a language, then chat with streaming responses.
 """
 
+import logging
 import os
 
+import openai
 import streamlit as st
 from dotenv import load_dotenv
 from openai import OpenAI
 
 from experts import EXPERTS
 from languages import LANGUAGES
+
+logger = logging.getLogger(__name__)
 
 # Load API key from .env file if present
 load_dotenv()
@@ -59,8 +63,28 @@ def generate_welcome_message(expert_name: str, language: str) -> str:
             max_tokens=200,
         )
         return response.choices[0].message.content
-    except Exception as e:
-        return f"Ciao! Sono {expert_name}. (Errore durante la presentazione: {e})"
+    except openai.RateLimitError:
+        return (
+            f"👋 Ciao! Sono {expert_name}.\n\n"
+            "⚠️ **Quota API esaurita.** Il limite di utilizzo dell'API OpenAI è stato raggiunto. "
+            "Verifica il tuo piano su [platform.openai.com](https://platform.openai.com/account/billing)."
+        )
+    except openai.AuthenticationError:
+        return (
+            f"👋 Ciao! Sono {expert_name}.\n\n"
+            "⚠️ **Chiave API non valida.** Controlla il valore di `OPENAI_API_KEY` nel file `.env`."
+        )
+    except openai.APIConnectionError:
+        return (
+            f"👋 Ciao! Sono {expert_name}.\n\n"
+            "⚠️ **Impossibile connettersi all'API OpenAI.** Controlla la tua connessione internet."
+        )
+    except Exception:
+        logger.exception("Unexpected error generating welcome message for %s", expert_name)
+        return (
+            f"👋 Ciao! Sono {expert_name}.\n\n"
+            "⚠️ Si è verificato un errore imprevisto. Riprova più tardi."
+        )
 
 
 # ── Helper: stream a chat response ───────────────────────────────────────────
@@ -79,8 +103,18 @@ def stream_response(messages: list, expert_name: str, language: str):
         for chunk in stream:
             if chunk.choices and chunk.choices[0].delta.content:
                 yield chunk.choices[0].delta.content
-    except Exception as e:
-        yield f"\n\n⚠️ Errore durante la risposta: {e}"
+    except openai.RateLimitError:
+        yield (
+            "\n\n⚠️ **Quota API esaurita.** Il limite di utilizzo dell'API OpenAI è stato raggiunto. "
+            "Verifica il tuo piano su [platform.openai.com](https://platform.openai.com/account/billing)."
+        )
+    except openai.AuthenticationError:
+        yield "\n\n⚠️ **Chiave API non valida.** Controlla il valore di `OPENAI_API_KEY` nel file `.env`."
+    except openai.APIConnectionError:
+        yield "\n\n⚠️ **Impossibile connettersi all'API OpenAI.** Controlla la tua connessione internet."
+    except Exception:
+        logger.exception("Unexpected error streaming response for %s", expert_name)
+        yield "\n\n⚠️ Si è verificato un errore imprevisto. Riprova più tardi."
 
 
 # ── Session state initialisation ─────────────────────────────────────────────
