@@ -7,10 +7,10 @@ Users can choose an AI expert and a language, then chat with streaming responses
 import logging
 import os
 
-import openai
+import google.generativeai as genai
 import streamlit as st
 from dotenv import load_dotenv
-from openai import OpenAI
+from google.api_core.exceptions import GoogleAPIError, PermissionDenied, ResourceExhausted
 
 from experts import EXPERTS
 from languages import LANGUAGES
@@ -19,6 +19,8 @@ logger = logging.getLogger(__name__)
 
 # Load API key from .env file if present
 load_dotenv()
+
+GEMINI_MODEL = "gemini-2.0-flash"
 
 
 # ── Page config ──────────────────────────────────────────────────────────────
@@ -30,10 +32,11 @@ st.set_page_config(
 )
 
 
-# ── OpenAI client ─────────────────────────────────────────────────────────────
+# ── Gemini client ─────────────────────────────────────────────────────────────
 
-api_key = os.getenv("OPENAI_API_KEY")
-client = OpenAI(api_key=api_key) if api_key else None
+api_key = os.getenv("GOOGLE_API_KEY")
+if api_key:
+    genai.configure(api_key=api_key)
 
 
 # ── Helper: build the system prompt ──────────────────────────────────────────
@@ -45,39 +48,48 @@ def build_system_prompt(expert_name: str, language: str) -> str:
     return f"{base}\n\n{lang_instruction}"
 
 
+def _to_gemini_history(messages: list) -> list:
+    """Convert OpenAI-style message list to Gemini chat history format.
+
+    System messages are skipped because the system prompt is passed via
+    ``system_instruction`` when constructing the GenerativeModel.
+    """
+    history = []
+    for msg in messages:
+        if msg["role"] == "system":
+            continue
+        role = "model" if msg["role"] == "assistant" else "user"
+        history.append({"role": role, "parts": [msg["content"]]})
+    return history
+
+
 # ── Helper: generate a welcome message via API ────────────────────────────────
 
 def generate_welcome_message(expert_name: str, language: str) -> str:
     """Ask the expert to introduce themselves with a short welcome message."""
     system_prompt = build_system_prompt(expert_name, language)
     try:
-        response = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {
-                    "role": "user",
-                    "content": "Presentati brevemente e di' come puoi aiutarmi.",
-                },
-            ],
-            max_tokens=200,
+        model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_prompt)
+        response = model.generate_content(
+            "Presentati brevemente e di' come puoi aiutarmi.",
+            generation_config=genai.GenerationConfig(max_output_tokens=200),
         )
-        return response.choices[0].message.content
-    except openai.RateLimitError:
+        return response.text
+    except ResourceExhausted:
         return (
             f"👋 Ciao! Sono {expert_name}.\n\n"
-            "⚠️ **Quota API esaurita.** Il limite di utilizzo dell'API OpenAI è stato raggiunto. "
-            "Verifica il tuo piano su [platform.openai.com](https://platform.openai.com/account/billing)."
+            "⚠️ **Quota API esaurita.** Il limite di utilizzo dell'API Google Gemini è stato raggiunto. "
+            "Verifica il tuo piano su [aistudio.google.com](https://aistudio.google.com)."
         )
-    except openai.AuthenticationError:
+    except PermissionDenied:
         return (
             f"👋 Ciao! Sono {expert_name}.\n\n"
-            "⚠️ **Chiave API non valida.** Controlla il valore di `OPENAI_API_KEY` nel file `.env`."
+            "⚠️ **Chiave API non valida.** Controlla il valore di `GOOGLE_API_KEY` nel file `.env`."
         )
-    except openai.APIConnectionError:
+    except GoogleAPIError:
         return (
             f"👋 Ciao! Sono {expert_name}.\n\n"
-            "⚠️ **Impossibile connettersi all'API OpenAI.** Controlla la tua connessione internet."
+            "⚠️ **Impossibile connettersi all'API Google Gemini.** Controlla la tua connessione internet."
         )
     except Exception:
         logger.exception("Unexpected error generating welcome message for %s", expert_name)
@@ -90,28 +102,28 @@ def generate_welcome_message(expert_name: str, language: str) -> str:
 # ── Helper: stream a chat response ───────────────────────────────────────────
 
 def stream_response(messages: list, expert_name: str, language: str):
-    """Yield text chunks from the streaming OpenAI response."""
+    """Yield text chunks from the streaming Gemini response."""
     system_prompt = build_system_prompt(expert_name, language)
-    full_messages = [{"role": "system", "content": system_prompt}] + messages
+    # Split history (all but the last user message) from the current prompt
+    history = _to_gemini_history(messages[:-1])
+    current_prompt = messages[-1]["content"]
 
     try:
-        stream = client.chat.completions.create(
-            model="gpt-4o-mini",
-            messages=full_messages,
-            stream=True,
-        )
+        model = genai.GenerativeModel(GEMINI_MODEL, system_instruction=system_prompt)
+        chat = model.start_chat(history=history)
+        stream = chat.send_message(current_prompt, stream=True)
         for chunk in stream:
-            if chunk.choices and chunk.choices[0].delta.content:
-                yield chunk.choices[0].delta.content
-    except openai.RateLimitError:
+            if chunk.text:
+                yield chunk.text
+    except ResourceExhausted:
         yield (
-            "\n\n⚠️ **Quota API esaurita.** Il limite di utilizzo dell'API OpenAI è stato raggiunto. "
-            "Verifica il tuo piano su [platform.openai.com](https://platform.openai.com/account/billing)."
+            "\n\n⚠️ **Quota API esaurita.** Il limite di utilizzo dell'API Google Gemini è stato raggiunto. "
+            "Verifica il tuo piano su [aistudio.google.com](https://aistudio.google.com)."
         )
-    except openai.AuthenticationError:
-        yield "\n\n⚠️ **Chiave API non valida.** Controlla il valore di `OPENAI_API_KEY` nel file `.env`."
-    except openai.APIConnectionError:
-        yield "\n\n⚠️ **Impossibile connettersi all'API OpenAI.** Controlla la tua connessione internet."
+    except PermissionDenied:
+        yield "\n\n⚠️ **Chiave API non valida.** Controlla il valore di `GOOGLE_API_KEY` nel file `.env`."
+    except GoogleAPIError:
+        yield "\n\n⚠️ **Impossibile connettersi all'API Google Gemini.** Controlla la tua connessione internet."
     except Exception:
         logger.exception("Unexpected error streaming response for %s", expert_name)
         yield "\n\n⚠️ Si è verificato un errore imprevisto. Riprova più tardi."
@@ -202,7 +214,7 @@ st.title(f"{expert_info['emoji']} {selected_expert}")
 # Warn if no API key is configured
 if not api_key:
     st.warning(
-        "⚠️ **API key non configurata.** Crea un file `.env` con `OPENAI_API_KEY=la-tua-chiave` e riavvia l'app.",
+        "⚠️ **API key non configurata.** Crea un file `.env` con `GOOGLE_API_KEY=la-tua-chiave` e riavvia l'app.",
         icon="🔑",
     )
     st.stop()
