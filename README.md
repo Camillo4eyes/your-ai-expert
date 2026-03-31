@@ -4,8 +4,6 @@ A simple Streamlit web app that lets you chat with different AI experts, each wi
 
 Built as a learning project to demonstrate basic LLM skills: conversation management, system prompts, streaming responses, and prompt engineering — without any complex architecture (no RAG, no vector DB, no fine-tuning).
 
-![Screenshot placeholder](screenshot.png)
-
 ---
 
 ## ✨ Features
